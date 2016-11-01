@@ -66,6 +66,6 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-initState();
+//initState();
 
 window.addEventListener('beforeunload', saveState);

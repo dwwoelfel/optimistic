@@ -2,79 +2,57 @@ import React, { Component } from 'react';
 import './App.css';
 import { Map, List } from 'immutable';
 import { projectState, addListener, updateState } from './State.js';
+import { hoc, Stats} from './hoc.js';
 
-class ServerRequest extends Component {
-  render() {
-    return (
-      <div style={{marginBottom: 20}}>
-        Add comment:
-        <pre>
-          {JSON.stringify(this.props.comment.delete('commentsBefore').toJS(), null, '\t')}
-        </pre>
-        <button onClick={this._onSuccess}>Succeed</button>
-        {' '}
-        <button onClick={this._onFail}>Fail</button>
-      </div>
-    );
-  }
-
-  _onFail = () => {
-    const comment = this.props.comment;
-    updateState(state => state.set('comments', comment.get('commentsBefore') || List()));
-  }
-
-  _onSuccess = () => {
-    const comment = this.props.comment;
-    updateState((state) => {
-      return state.update('comments', (comments) => {
-        return comments.map(c => {
-          if (c === comment) {
-            return c.set('optimistic', false);
-          }
-          return c;
-        })
-      })
-    });
+function normShape(shape) {
+  const {startX, endX, startY, endY} = shape;
+  return {
+    x: Math.min(startX, endX),
+    y: Math.min(startY, endY),
+    width: Math.abs(startX - endX),
+    height: Math.abs(startY - endY),
+    ...shape,
   }
 }
 
-class Comment extends Component {
+function randInt(max) {
+ return Math.floor(Math.random() * (max + 1));
+}
+
+function randColor() {
+  return `rgba(${randInt(255)},${randInt(255)},${randInt(255)}, 0.6)`;
+}
+
+
+const Shape = hoc(class Shape extends Component {
   render() {
-    const comment = this.props.comment;
-    const mins = Math.floor((Date.now() - comment.get('timestamp')) / 1000 / 60);
-    const time = mins < 1
-            ? 'just now'
-            : mins < 60
-            ? `${mins} min${mins > 1 ? 's' : ''} ago`
-            : `${Math.floor(mins / 60)} hr${Math.floor(mins / 60) > 1 ? 's' : ''} ago`
-
+    const {x, y, width, height, color, id} = normShape(this.props.shape);
     return (
-      <div style={{
-        width: 250,
-        textAlign: 'left',
-        borderLeft: `4px solid ${comment.get('optimistic') ? 'gray' : 'green'}`,
-        padding: 10,
-        marginTop: 20,
-      }}>
-        <p style={{padding: 0, margin: 0}}>
-          <span style={{
-             fontSize: 12,
-             marginBottom: 0,
-             paddingBottom: 0,
-             display: 'block',
-          }}>
-            {comment.get('author')} {time}
-          </span>
-          <br/>
-          {comment.get('body')}
-        </p>
-
+      <div
+         onClick={this._changeColor}
+         className="shape"
+         style={{
+           cursor: 'pointer',
+           top: y,
+           left: x,
+           backgroundColor: color,
+           width,
+           height,
+           zIndex: Math.floor(id / 100000000),
+         }}>
       </div>
     );
   }
-}
+  _changeColor = () => {
+    const {id} = this.props.shape;
+    updateState(state => state.setIn(
+      ['shapes', id],
+      {...this.props.shape, color: randColor()},
+    ));
+  }
+});
 
-class App extends Component {
+const App = hoc(class App extends Component {
   constructor(props) {
     super(props);
     this.state = {projectState};
@@ -84,6 +62,7 @@ class App extends Component {
     this._cleanup = addListener(({newState}) => {
       this.setState({projectState: newState});
     });
+    window.addEventListener('keydown', this._onKey);
   }
 
   componentWillUnmount() {
@@ -92,57 +71,72 @@ class App extends Component {
 
   render() {
     const state = this.state.projectState || Map({});
-    const comments = state.get('comments', List());
     return (
-      <div className="App">
-        <div className="comments">
-          <div>
-            <textarea rows="4" cols="50" onChange={this._onCommentChange} value={this.state.commentBody || ''}/>
-            <div>
-              <button onClick={this._onAddComment}>
-                Add comment
-              </button>
-            </div>
-          </div>
+      <div
+         className="App"
+         onMouseDown={this._startShape}
+         onMouseMove={this._changeShape}
+         onMouseUp={this._endShape}>
+        {this.state.stats ? <Stats/> : null}
+        <div className="shapes">
           {
-            comments.sortBy(x => -x.get('id')).map(comment => <Comment key={comment.get('id')} comment={comment}/>)
+            state.get('shapes', Map()).valueSeq().sortBy(x => x.id).toArray().map((v) => {
+              return <Shape key={v.id} shape={v}/>;
+            })
           }
         </div>
-        <div className="server">
-          <h4>Server Requests</h4>
-          {
-            comments
-              .filter(x => x.get('optimistic'))
-              .sortBy(x => -x.get('id'))
-              .map(comment => <ServerRequest key={comment.get('id')} comment={comment}/>)
-          }
+        <div className="in-progress-shapes">
+          {this.state.drawing ? <Shape shape={this.state}/> : null}
         </div>
       </div>
     );
   }
 
-  _onCommentChange = (event) => {
-    this.setState({commentBody: event.target.value});
-  }
-
-  _onAddComment = () => {
-    const body = this.state.commentBody;
-    if (!body) {
-      return;
-    }
-
-    updateState(state => {
-      return state.update('comments', List(), (c) => c.push(Map({
-        body: body,
-        author: 'dww',
-        timestamp: Date.now(),
-        id: Date.now(),
-        optimistic: true,
-        commentsBefore: state.get('comments'),
-      })))
+  _startShape = (e) => {
+    this.setState({
+      startX: e.pageX,
+      startY: e.pageY,
+      endX: e.pageX,
+      endY: e.pageY,
+      color: randColor(),
+      id: Date.now(),
+      drawing: true,
     });
-    this.setState({commentBody: ''});
   }
-}
+
+  _changeShape = (e) => {
+    if (this.state.drawing) {
+      this.setState({
+        endX: e.pageX,
+        endY: e.pageY,
+      });
+    }
+  }
+
+  _endShape = (e) => {
+    if (this.state.drawing) {
+      this.setState({
+        drawing: false,
+      });
+      const {startX, startY, endX, endY, color, id} = this.state;
+      updateState(state => {
+        return state.setIn(['shapes', id], {
+          startX,
+          startY,
+          endX,
+          endY,
+          id,
+          color,
+        });
+      });
+    }
+  }
+
+  _onKey = (e) => {
+    if (e.key === 's') {
+      this.setState({stats: !this.state.stats});
+    }
+  }
+})
 
 export default App;
